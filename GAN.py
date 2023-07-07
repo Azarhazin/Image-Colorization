@@ -7,6 +7,8 @@ from pathlib import Path
 from tqdm.notebook import tqdm
 import matplotlib.pyplot as plt
 from skimage.color import rgb2lab, lab2rgb
+import skimage.metrics as metrics
+
 
 import torch
 from torch import nn, optim
@@ -197,6 +199,20 @@ def init_weights(net, init='norm', gain=0.02):
     print(f"model initialized with {init} initialization")
     return net
 
+def evaluate_psnr(model, val_dl):
+    psnr_meter = AverageMeter()
+    model.net_G.eval()
+    with torch.no_grad():
+        for data in tqdm(val_dl):
+            model.setup_input(data)
+            model.forward()
+            fake_color = model.fake_color.detach()
+            real_color = model.ab
+            psnr = metrics.peak_signal_noise_ratio(fake_color.cpu().numpy(), real_color.cpu().numpy(), data_range=2.0)
+            psnr_meter.update(psnr, count=data['L'].size(0))
+    return psnr_meter.avg
+
+
 def init_model(model, device):
     model = model.to(device)
     model = init_weights(model)
@@ -213,7 +229,7 @@ class MainModel(nn.Module):
         if net_G is None:
             self.net_G = init_model(Unet(input_c=1, output_c=2, n_down=8, num_filters=64), self.device)
         else:
-            self.net_G = net_G.to(self.device)
+            self.net_G = init_model(net_G, self.device)
         self.net_D = init_model(PatchDiscriminator(input_c=3, n_down=3, num_filters=64), self.device)
         self.GANcriterion = GANLoss(gan_mode='vanilla').to(self.device)
         self.L1criterion = nn.L1Loss()
@@ -348,12 +364,14 @@ def train_model(model, train_dl, epochs, display_every=100):
             model.setup_input(data) 
             model.optimize()
             update_losses(model, loss_meter_dict, count=data['L'].size(0)) # function updating the log objects
+            psnr = evaluate_psnr(model, val_dl)
+            print(f"Average PSNR: {psnr:.2f}")
             i += 1
             if i % display_every == 0:
                 print(f"\nEpoch {e+1}/{epochs}")
                 print(f"Iteration {i}/{len(train_dl)}")
-                #log_results(loss_meter_dict) # function to print out the losses
+                log_results(loss_meter_dict) # function to print out the losses
                 visualize(model, data, save=False) # function displaying the model's outputs
 
 model = MainModel()
-train_model(model, train_dl, 2)
+train_model(model, train_dl, 10)
